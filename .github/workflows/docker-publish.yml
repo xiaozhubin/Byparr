@@ -1,223 +1,47 @@
-name: Docker
-
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+name: Build and Publish Docker Image
 
 on:
-  schedule:
-    - cron: "25 0 * * *"
   push:
-    branches: ["*"]
-    # Publish semver tags as releases.
-    tags: ["v*.*.*"]
-    paths:
-      - "src/**"
-      - "main.py"
-      - "tests/**"
-      - "Dockerfile"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "compose.yaml"
-      - ".github/workflows/docker-publish.yml"
-  pull_request:
-    branches: ["main"]
-    paths:
-      - "src/**"
-      - "main.py"
-      - "tests/**"
-      - "Dockerfile"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "compose.yaml"
-      - ".github/workflows/docker-publish.yml"
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 env:
-  # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
-  # github.repository as <account>/<repo>
-  IMAGE_NAME: ${{ github.repository }}
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Test
-        id: test
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          cache-from: type=gha,scope=x64
-          pull: true
-          cache-to: type=gha,mode=max,scope=x64
-          target: test
-
   build:
-    needs: test
-    # Skip build for Renovate PRs
-    if: github.event.pull_request.user.login != 'renovate[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write
-
-    strategy:
-      matrix:
-        platform: [linux/amd64, linux/arm64]
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Prepare variables
-        id: vars
+      # 【核心新增】将大写的仓库名转换为全小写，并存入系统变量中
+      - name: Downcase REPO name
         run: |
-          SURFIX=$(echo ${{ matrix.platform }} | cut -d'/' -f2)
-          echo "SURFIX=$SURFIX" >> $GITHUB_OUTPUT
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
-          # Use PR number for PRs, SHA for everything else
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            echo "LOCAL_TAG=pr-${{ github.event.pull_request.number }}-$SURFIX" >> $GITHUB_OUTPUT
-          else
-            echo "LOCAL_TAG=${{ github.sha }}-$SURFIX" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      # Set up BuildKit Docker container builder
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
-      # Log into registry
       - name: Log into registry ${{ env.REGISTRY }}
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata (tags, labels) for Docker
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          tags: type=raw,value=${{ steps.vars.outputs.LOCAL_TAG }}
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
-      # Build and push Docker image for each platform
-      - name: Build Docker image
-        id: build
-        uses: docker/build-push-action@v7
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
         with:
           context: .
-          pull: true
+          file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: ${{ matrix.platform }}
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
-          build-args: |
-            GITHUB_BUILD=true
-            VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
-
-  merge-and-push:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      # Install the cosign tool
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.1
-
-      # Set up Docker Buildx
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # Log into registry
-      - name: Log into registry ${{ env.REGISTRY }}
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Extract Docker metadata for tagging
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
+          # 【修改】使用刚才转换好的全小写环境变量 env.IMAGE_NAME
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
-      # Create manifest lists and push
-      - name: Create and push manifest lists
-        run: |
-          TAGS="${{ steps.meta.outputs.tags }}"
-          args=""
-
-          image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          image=${image,,}
-
-          # Create tag arguments
-          for tag in $TAGS; do
-              args="$args -t $tag"
-          done
-
-          if [ "${{ github.ref_type }}" == "tag" ]; then
-            args="$args -t ${image}:latest"
-          fi
-
-          echo $args
-
-          # Use PR-based tags for PRs, SHA-based tags for everything else
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            docker buildx imagetools create $args \
-            ${image}:pr-${{ github.event.pull_request.number }}-amd64 \
-            ${image}:pr-${{ github.event.pull_request.number }}-arm64
-          else
-            docker buildx imagetools create $args \
-            ${image}:${{github.sha}}-amd64 \
-            ${image}:${{github.sha}}-arm64
-          fi
-
-      # Sign the manifest
-      - name: Sign the manifests
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          for TAG in $TAGS; do
-            cosign sign --yes $TAG
-          done
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
