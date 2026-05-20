@@ -42,6 +42,6 @@ jobs:
           push: true
           # 【修改】使用刚才转换好的全小写环境变量 env.IMAGE_NAME
           tags: |
-            ghcr.io/xiaozhubin/byparr/:latest
+            ghcr.io/xiaozhubin/byparr:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
