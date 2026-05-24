@@ -11,7 +11,7 @@ ENV GITHUB_BUILD=${GITHUB_BUILD}\
     # prevents python creating .pyc files
     PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
-    PORT=8192 \
+    PORT=8191 \
     XDG_CACHE_HOME=/cache \
     HOME=/tmp
 
